@@ -1,110 +1,92 @@
-'use strict';
+var cacheName = 'the-question';
 
-// The name of your game, no spaces or special characters.
-const name = 'Monogatari';
-
-// The version of the cache, changing this will force everything to be cached
-// again.
-const version = '0.1.0';
-
-const files = [
-
-	'/',
-
-	// General Files
-	'manifest.json',
-
-	// Engine Files
-	'engine/core/monogatari.css',
-	'engine/core/monogatari.js',
-
-	// HTML Files
-	'index.html',
-
-	// Style Sheets
-	'style/main.css',
-
-	// JavaScript Files
-	'js/options.js',
-	'js/storage.js',
-	'js/script.js',
-	'js/main.js',
-
-	// App Images
-	'favicon.ico',
-	'assets/icons/icon_48x48.png',
-	'assets/icons/icon_60x60.png',
-	'assets/icons/icon_70x70.png',
-	'assets/icons/icon_76x76.png',
-	'assets/icons/icon_96x96.png',
-	'assets/icons/icon_120x120.png',
-	'assets/icons/icon_128x128.png',
-	'assets/icons/icon_150x150.png',
-	'assets/icons/icon_152x152.png',
-	'assets/icons/icon_167x167.png',
-	'assets/icons/icon_180x180.png',
-	'assets/icons/icon_192x192.png',
-	'assets/icons/icon_310x150.png',
-	'assets/icons/icon_310x310.png',
-	'assets/icons/icon_512x512.png'
-];
-
-self.addEventListener ('install', (event) => {
-	self.skipWaiting ();
-	event.waitUntil (
-		caches.open (`${name}-v${version}`).then ((cache) => {
-			return cache.addAll (files);
-		})
-	);
+/* Start the service worker and cache all of the app's content or use the existing one */
+self.addEventListener('install', function (e) {
+    console.log('Service worker installed.');
+    self.skipWaiting();
 });
 
-self.addEventListener ('activate', (event) => {
-	event.waitUntil (
-		caches.keys ().then ((keyList) => {
-			return Promise.all (keyList.map ((key) => {
-				if (key !== `${name}-v${version}`) {
-					return caches.delete (key);
-				}
-			}));
-		})
-	);
-	return self.clients.claim ();
+self.addEventListener('activate', function (e) {
+    return self.clients.claim();
 });
 
-self.addEventListener ('fetch', (event) => {
 
-	if (event.request.method !== 'GET') {
-		return;
-	}
+/**
+ * True if the service worker should add the request to a persistent cache.
+ */
+let addToCache = false;
 
-	event.respondWith (
-		caches.match (event.request).then ((cached) => {
-			function fetchedFromNetwork (response) {
-				const cacheCopy = response.clone ();
+/**
+ * Serves the cached version of the request if it exists, otherwise fetches the
+ * request from the network and caches it. Fetch is used in the default mode,
+ * which will use the cache for most network requests, freshening the cache
+ * as required.
+ */
+async function fetchAndCache(request) {
+    const cache = await caches.open(cacheName);
+    const cachedResponse = await cache.match(request);
 
-				caches.open (`${name}-v${version}`).then (function add (cache) {
-					cache.put (event.request, cacheCopy);
-				});
-				return response;
-			}
 
-			function unableToResolve () {
-				return new Response (`
-					<!DOCTYPE html><html lang=en><title>Bad Request</title><meta charset=UTF-8><meta content="width=device-width,initial-scale=1"name=viewport><style>body,html{width:100%;height:100%}body{text-align:center;color:#545454;margin:0;display:flex;justify-content:center;align-items:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Oxygen,Ubuntu,Cantarell,"Open Sans","Fira Sans","Droid Sans","Helvetica Neue",sans-serif}h1,h2{font-weight:lighter}h1{font-size:4em}h2{font-size:2em}</style><div><h1>Service Unavailable</h1><h2>Sorry, the server is currently unavailable or under maintenance, try again later.</h2></div>
-				`, {
-					status: 503,
-					statusText: 'Service Unavailable',
-					headers: new Headers ({
-						'Content-Type': 'text/html'
-					})
-				});
-			}
+    try {
 
-			const networked = fetch (event.request)
-				.then (fetchedFromNetwork, unableToResolve)
-				.catch (unableToResolve);
+        if (request.url.endsWith("?cached")) {
+            request = new Request(request.url.replace("?cached", "?uncached"), request);
+            let rv = await cache.match(request);
 
-			return cached || networked;
-		})
-	);
+            if (rv == null) {
+                rv = new Response("Not found in cache.", { status: 404, statusText: "Not found in cache." });
+            }
+
+            return rv;
+        }
+
+        if (cachedResponse) {
+            if (cachedResponse.headers.get('Last-Modified')) {
+                request.headers.set('If-Modified-Since', cachedResponse.headers.get('Last-Modified'));
+            }
+            if (cachedResponse.headers.get('ETag')) {
+                request.headers.set('If-None-Match', cachedResponse.headers.get('ETag'));
+            }
+        }
+
+        const response = await fetch(request);
+
+        if (cachedResponse && response.status == 304) {
+            return cachedResponse;
+        }
+
+        if (addToCache && response.status == 200) {
+            await cache.put(request, response.clone());
+        }
+
+        return response;
+
+    } catch (e) {
+
+        if (cachedResponse) {
+            console.log('Served from cache: ' + request.url);
+            return cachedResponse;
+        }
+
+        console.log('Not found in cache: ' + request.url);
+
+        throw e;
+    }
+}
+
+
+/* Serve cached content when offline */
+self.addEventListener('fetch', function (e) {
+    e.respondWith(fetchAndCache(e.request));
+});
+
+self.addEventListener('message', function (e) {
+    if (e.data[0] == "clearCache") {
+        caches.delete(cacheName);
+        console.log("Cache cleared in service worker.");
+
+        addToCache = false;
+    } else if (e.data[0] == "loadCache") {
+        addToCache = true;
+    }
 });
